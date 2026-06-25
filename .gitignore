@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+models/
+data/
+*.nii.gz
+*.json
+*.pt
+*.pth
