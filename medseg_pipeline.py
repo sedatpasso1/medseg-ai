@@ -381,6 +381,7 @@ class SegmentationResult:
     output_nifti: str
     window: str
     device: str
+    backend_type: str = "pytorch"  # pytorch | ort | trt
 
 
 class MedSegPipeline:
@@ -402,23 +403,44 @@ class MedSegPipeline:
         device: Optional[torch.device] = None,
         use_sam2: bool = True,
         nnunet_folds: tuple[int, ...] = (0,),
+        use_tensorrt: bool = False,
+        trt_engine_cache: str | Path = "engines",
+        trt_fp16: bool = True,
     ) -> None:
         self.device = _get_device(device)
         self.use_sam2 = use_sam2
 
-        self.loader   = DICOMLoader(window=window)
-        self.nnunet   = nnUNetPredictor(
-            model_folder=model_folder,
-            folds=nnunet_folds,
-            device=self.device,
-        )
-        self.sam2     = SAM2Refiner(
+        self.loader = DICOMLoader(window=window)
+
+        if use_tensorrt:
+            from tensorrt_nnunet import TRTnnUNetPredictor
+            self.nnunet = TRTnnUNetPredictor(
+                model_folder=model_folder,
+                engine_cache_dir=trt_engine_cache,
+                fp16=trt_fp16,
+                folds=nnunet_folds,
+                device=self.device,
+            )
+        else:
+            self.nnunet = nnUNetPredictor(
+                model_folder=model_folder,
+                folds=nnunet_folds,
+                device=self.device,
+            )
+
+        self.sam2 = SAM2Refiner(
             checkpoint=sam2_checkpoint,
             model_cfg=sam2_cfg,
             device=self.device,
         ) if use_sam2 else None
 
-        log.info(f"MedSegPipeline hazır | device={self.device} | SAM2={'açık' if use_sam2 else 'kapalı'}")
+        backend_label = (
+            "trt" if use_tensorrt else "pytorch"
+        )
+        log.info(
+            f"MedSegPipeline hazır | device={self.device} | "
+            f"backend={backend_label} | SAM2={'açık' if use_sam2 else 'kapalı'}"
+        )
 
     def predict(self, dicom_path: str | Path) -> SegmentationResult:
         """
@@ -454,6 +476,11 @@ class MedSegPipeline:
             str(c): int((final_mask == c).sum()) for c in class_ids
         }
 
+        # Backend türünü belirle
+        backend_type = "pytorch"
+        if hasattr(self.nnunet, "active_mode"):
+            backend_type = self.nnunet.active_mode
+
         result = SegmentationResult(
             dicom_path=str(dicom_path),
             modality=meta.modality if meta else "CT",
@@ -465,6 +492,7 @@ class MedSegPipeline:
             nnunet_inference_sec=round(nn_sec, 2),
             sam2_refine_sec=round(sam_sec, 2),
             total_sec=round(total_sec, 2),
+            backend_type=backend_type,
             output_nifti="",
             window=self.loader.window,
             device=str(self.device),
